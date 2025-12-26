@@ -1,0 +1,445 @@
+/*
+ * SIMPLE FINGERPRINT VOTING SYSTEM WITH ACCESSIBILITY
+ * Pin 10 = Accessibility button for disabled voters
+ */
+
+#include <Adafruit_Fingerprint.h>
+#include <SoftwareSerial.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// ==================== PINS ====================
+#define BUTTON_A 2
+#define BUTTON_B 3
+#define BUTTON_C 4
+#define BUTTON_D 5
+#define BUTTON_RESULTS 6
+#define LED_GREEN 7
+#define LED_RED 8
+#define ACCESSIBILITY_BUTTON 10  // For disabled voters
+
+// ==================== HARDWARE ====================
+SoftwareSerial mySerial(11, 12);
+Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// ==================== VOTE COUNTERS ====================
+int voteA = 0;
+int voteB = 0;
+int voteC = 0;
+int voteD = 0;
+
+// ==================== TRACKING ====================
+bool hasVoted[128] = {false};
+bool fingerAuthenticated = false;
+int currentVoterID = -1;
+unsigned long authTime = 0;
+
+// Accessibility voting tracking
+int accessibilityVoteCount = 0;
+const int MAX_ACCESSIBILITY_VOTES = 20;
+
+// ==================== SETUP ====================
+void setup() {
+  Serial.begin(9600);
+  Serial.println("=== Voting System with Accessibility ===");
+  
+  // Setup pins
+  pinMode(BUTTON_A, INPUT_PULLUP);
+  pinMode(BUTTON_B, INPUT_PULLUP);
+  pinMode(BUTTON_C, INPUT_PULLUP);
+  pinMode(BUTTON_D, INPUT_PULLUP);
+  pinMode(BUTTON_RESULTS, INPUT_PULLUP);
+  pinMode(ACCESSIBILITY_BUTTON, INPUT_PULLUP);
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_RED, OUTPUT);
+  
+  // Initialize LCD
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.print("Starting...");
+  
+  // Initialize fingerprint sensor
+  finger.begin(57600);
+  delay(200);
+  
+  if (finger.verifyPassword()) {
+    Serial.println("Sensor OK!");
+    lcd.clear();
+    lcd.print("Sensor Ready");
+    delay(1000);
+  } else {
+    Serial.println("Sensor ERROR!");
+    lcd.clear();
+    lcd.print("SENSOR ERROR!");
+    while(1) {
+      digitalWrite(LED_RED, !digitalRead(LED_RED));
+      delay(500);
+    }
+  }
+  
+  // Ready to start
+  lcd.clear();
+  lcd.print("Place Finger");
+  lcd.setCursor(0, 1);
+  lcd.print("Or Press Assist");
+  Serial.println("System Ready!");
+}
+
+// ==================== MAIN LOOP ====================
+void loop() {
+  if (fingerAuthenticated) {
+    // === SPECIAL LOGIC FOR ID 1 ===
+    if (currentVoterID == 1) {
+      // 1. View Results (once per scan)
+      if (digitalRead(BUTTON_RESULTS) == LOW) {
+        delay(200);
+        showResults();
+        delay(3000);
+        lcd.clear();
+        lcd.print("Place Finger");
+        lcd.setCursor(0, 1);
+        lcd.print("Or Press Assist");
+        fingerAuthenticated = false;
+        currentVoterID = -1;
+        return;
+      }
+      // 2. Use Accessibility Mode (once per scan)
+      if (digitalRead(ACCESSIBILITY_BUTTON) == LOW) {
+        delay(200); // debounce
+        if (digitalRead(ACCESSIBILITY_BUTTON) == LOW) {
+          if (accessibilityVoteCount < MAX_ACCESSIBILITY_VOTES) {
+            // Enable accessibility voting
+            currentVoterID = 100 + accessibilityVoteCount;
+            accessibilityVoteCount++;
+            authTime = millis();
+
+            lcd.clear();
+            lcd.print("Assist Mode");
+            lcd.setCursor(0, 1);
+            lcd.print("Voter #");
+            lcd.print(accessibilityVoteCount);
+            digitalWrite(LED_GREEN, HIGH);
+            delay(1500);
+            digitalWrite(LED_GREEN, LOW);
+
+            lcd.clear();
+            lcd.print("Press Button:");
+            lcd.setCursor(0, 1);
+            lcd.print("A B C D");
+
+            // Allow only one vote in this session
+            bool voted = false;
+            unsigned long assistStart = millis();
+            while (millis() - assistStart < 15000 && !voted) {
+              if (digitalRead(BUTTON_A) == LOW) {
+                delay(100);
+                if (digitalRead(BUTTON_A) == LOW) {
+                  castVote('A');
+                  voted = true;
+                }
+              }
+              if (digitalRead(BUTTON_B) == LOW) {
+                delay(100);
+                if (digitalRead(BUTTON_B) == LOW) {
+                  castVote('B');
+                  voted = true;
+                }
+              }
+              if (digitalRead(BUTTON_C) == LOW) {
+                delay(100);
+                if (digitalRead(BUTTON_C) == LOW) {
+                  castVote('C');
+                  voted = true;
+                }
+              }
+              if (digitalRead(BUTTON_D) == LOW) {
+                delay(100);
+                if (digitalRead(BUTTON_D) == LOW) {
+                  castVote('D');
+                  voted = true;
+                }
+              }
+              delay(50);
+            }
+            // End assist mode session regardless of voting outcome
+            fingerAuthenticated = false;
+            currentVoterID = -1;
+            lcd.clear();
+            lcd.print("Place Finger");
+            lcd.setCursor(0, 1);
+            lcd.print("Or Press Assist");
+            return;
+          } else {
+            lcd.clear();
+            lcd.print("Accessibility");
+            lcd.setCursor(0, 1);
+            lcd.print("Limit Reached!");
+            digitalWrite(LED_RED, HIGH);
+            delay(2000);
+            digitalWrite(LED_RED, LOW);
+            fingerAuthenticated = false;
+            currentVoterID = -1;
+            lcd.clear();
+            lcd.print("Place Finger");
+            lcd.setCursor(0, 1);
+            lcd.print("Or Press Assist");
+            return;
+          }
+        }
+      }
+      // Timeout after 15 sec of inactivity
+      if (millis() - authTime > 15000) {
+        lcd.clear();
+        lcd.print("Timeout!");
+        delay(1500);
+        fingerAuthenticated = false;
+        currentVoterID = -1;
+        lcd.clear();
+        lcd.print("Place Finger");
+        lcd.setCursor(0, 1);
+        lcd.print("Or Press Assist");
+        return;
+      }
+    } else {
+      // === NORMAL VOTER LOGIC ===
+      if (millis() - authTime > 15000) {
+        Serial.println("Timeout!");
+        lcd.clear();
+        lcd.print("Timeout!");
+        delay(1500);
+        fingerAuthenticated = false;
+        currentVoterID = -1;
+        lcd.clear();
+        lcd.print("Place Finger");
+        lcd.setCursor(0, 1);
+        lcd.print("Or Press Assist");
+        return;
+      }
+      // Wait for vote button press
+      if (digitalRead(BUTTON_A) == LOW) {
+        delay(100);
+        if (digitalRead(BUTTON_A) == LOW) {
+          castVote('A');
+          return;
+        }
+      }
+      if (digitalRead(BUTTON_B) == LOW) {
+        delay(100);
+        if (digitalRead(BUTTON_B) == LOW) {
+          castVote('B');
+          return;
+        }
+      }
+      if (digitalRead(BUTTON_C) == LOW) {
+        delay(100);
+        if (digitalRead(BUTTON_C) == LOW) {
+          castVote('C');
+          return;
+        }
+      }
+      if (digitalRead(BUTTON_D) == LOW) {
+        delay(100);
+        if (digitalRead(BUTTON_D) == LOW) {
+          castVote('D');
+          return;
+        }
+      }
+    }
+  } else {
+    // ============ Scan Fingerprint ============
+    int id = scanFingerprint();
+    if (id > 0) {
+      if (id == 1) {
+        // Authenticate ID 1 with special menu
+        fingerAuthenticated = true;
+        currentVoterID = 1;
+        authTime = millis();
+        Serial.println("ID 1 Authenticated");
+        lcd.clear();
+        lcd.print("ID1 Ready:");
+        lcd.setCursor(0, 1);
+        lcd.print("Result/Assist");
+        return;
+      }
+      Serial.print("Found ID: ");
+      Serial.println(id);
+
+      if (hasVoted[id]) {
+        Serial.println("Already voted!");
+        lcd.clear();
+        lcd.print("Already Voted!");
+        lcd.setCursor(0, 1);
+        lcd.print("ID: ");
+        lcd.print(id);
+        digitalWrite(LED_RED, HIGH);
+        delay(2000);
+        digitalWrite(LED_RED, LOW);
+        lcd.clear();
+        lcd.print("Place Finger");
+        lcd.setCursor(0, 1);
+        lcd.print("Or Press Assist");
+      } else {
+        fingerAuthenticated = true;
+        currentVoterID = id;
+        authTime = millis();
+
+        Serial.println("Authenticated!");
+        lcd.clear();
+        lcd.print("Welcome Voter!");
+        lcd.setCursor(0, 1);
+        lcd.print("ID: ");
+        lcd.print(id);
+        digitalWrite(LED_GREEN, HIGH);
+        delay(1500);
+        digitalWrite(LED_GREEN, LOW);
+
+        // Show voting options
+        lcd.clear();
+        lcd.print("Press Button:");
+        lcd.setCursor(0, 1);
+        lcd.print("A B C D");
+      }
+    } else if (id == 0) {
+      Serial.println("Not enrolled!");
+      lcd.clear();
+      lcd.print("Not Enrolled!");
+      digitalWrite(LED_RED, HIGH);
+      delay(1500);
+      digitalWrite(LED_RED, LOW);
+      lcd.clear();
+      lcd.print("Place Finger");
+      lcd.setCursor(0, 1);
+      lcd.print("Or Press Assist");
+    }
+  }
+  delay(50);
+}
+
+// ==================== SCAN FINGERPRINT ====================
+int scanFingerprint() {
+  uint8_t p = finger.getImage();
+  if (p != FINGERPRINT_OK) return -1;
+  p = finger.image2Tz();
+  if (p != FINGERPRINT_OK) return -1;
+  p = finger.fingerFastSearch();
+  if (p == FINGERPRINT_OK) {
+    return finger.fingerID;
+  } else if (p == FINGERPRINT_NOTFOUND) {
+    return 0;
+  }
+  return -1;
+}
+
+// ==================== CAST VOTE ====================
+void castVote(char candidate) {
+  // Increment vote counter
+  if (candidate == 'A') voteA++;
+  else if (candidate == 'B') voteB++;
+  else if (candidate == 'C') voteC++;
+  else if (candidate == 'D') voteD++;
+
+  // Mark as voted (only for fingerprint IDs except accessibility and except ID 1)
+  if (currentVoterID < 100 && currentVoterID != 1) {
+    hasVoted[currentVoterID] = true;
+  }
+
+  // Determine voter type
+  String voterType = (currentVoterID >= 100) ? "Assist" : "Regular";
+
+  Serial.print("Vote cast for: ");
+  Serial.print(candidate);
+  Serial.print(" by ");
+  Serial.print(voterType);
+  Serial.print(" ID: ");
+  Serial.println(currentVoterID);
+
+  // Show confirmation
+  lcd.clear();
+  lcd.print("Vote Recorded!");
+  lcd.setCursor(0, 1);
+  lcd.print("For: ");
+  lcd.print(candidate);
+  if (currentVoterID >= 100) {
+    lcd.print(" (Assist)");
+  }
+
+  // Blink LED
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(LED_GREEN, HIGH);
+    delay(200);
+    digitalWrite(LED_GREEN, LOW);
+    delay(200);
+  }
+
+  delay(2000);
+
+  // Reset authentication
+  fingerAuthenticated = false;
+  currentVoterID = -1;
+
+  // Back to idle
+  lcd.clear();
+  lcd.print("Place Finger");
+  lcd.setCursor(0, 1);
+  lcd.print("Or Press Assist");
+
+  Serial.println("Ready for next voter");
+}
+
+// ==================== SHOW RESULTS ====================
+void showResults() {
+  int totalVotes = voteA + voteB + voteC + voteD;
+
+  Serial.println("=== RESULTS ===");
+  Serial.print("A: "); Serial.println(voteA);
+  Serial.print("B: "); Serial.println(voteB);
+  Serial.print("C: "); Serial.println(voteC);
+  Serial.print("D: "); Serial.println(voteD);
+  Serial.print("Total: "); Serial.println(totalVotes);
+  Serial.print("Accessibility votes: "); Serial.println(accessibilityVoteCount);
+
+  lcd.clear();
+  lcd.print("*** RESULTS ***");
+  lcd.setCursor(0, 1);
+  lcd.print("A:");
+  lcd.print(voteA);
+  lcd.print(" B:");
+  lcd.print(voteB);
+  lcd.print(" C:");
+  lcd.print(voteC);
+  lcd.print(" D:");
+  lcd.print(voteD);
+
+  delay(3000);
+
+  // Show total
+  lcd.clear();
+  lcd.print("Total: ");
+  lcd.print(totalVotes);
+  lcd.setCursor(0, 1);
+  lcd.print("Assist: ");
+  lcd.print(accessibilityVoteCount);
+
+  delay(2000);
+
+  // Find winner
+  int maxVotes = max(max(voteA, voteB), max(voteC, voteD));
+
+  lcd.clear();
+  lcd.print("WINNER: ");
+
+  if (voteA == maxVotes) lcd.print("A");
+  else if (voteB == maxVotes) lcd.print("B");
+  else if (voteC == maxVotes) lcd.print("C");
+  else if (voteD == maxVotes) lcd.print("D");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Votes: ");
+  lcd.print(maxVotes);
+
+  digitalWrite(LED_GREEN, HIGH);
+}
+
+
