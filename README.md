@@ -1,0 +1,2 @@
+# Biometric-Idea-Voting-System-Enhancing-Integrity-and-Efficiency
+Biometric Idea Voting System is a secure electronic voting solution using fingerprint authentication to prevent duplicate and fraudulent voting. Built with Arduino, an R307 fingerprint sensor, LCD display, and push buttons, it ensures one-person-one-vote, real-time result display, and improved accuracy for academic or corporate decision-making
